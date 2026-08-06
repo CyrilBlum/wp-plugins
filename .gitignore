@@ -2,4 +2,6 @@
 *
 !cyril-gallery/
 !cyril-gallery/**
+!blum-blog/
+!blum-blog/**
 !.gitignore
