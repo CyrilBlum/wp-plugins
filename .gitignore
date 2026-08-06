@@ -1,7 +1,7 @@
-# Track only the reusable Blum Gallery plugin for now.
+# Track the reusable Blum Gallery and Blum Blog plugins.
 *
-!cyril-gallery/
-!cyril-gallery/**
+!blum-gallery/
+!blum-gallery/**
 !blum-blog/
 !blum-blog/**
 !.gitignore

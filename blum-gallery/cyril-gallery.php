@@ -76,9 +76,10 @@ function blum_gallery_taxonomy($item, $mapping = []) {
     return ['parent' => $mapped_parent ?: ($tags[0] ?? 'Selected'), 'children' => $children];
 }
 
-add_action('add_meta_boxes', function () {
+add_action('add_meta_boxes', function ($post_type, $post) {
+    if ($post_type !== 'page' || !$post || (!has_shortcode((string) $post->post_content, 'blum_gallery') && !has_shortcode((string) $post->post_content, 'cyril_gallery'))) return;
     add_meta_box('cyril_gallery_images', 'Blum Gallery Images', 'cyril_gallery_meta_box', 'page', 'normal', 'high');
-});
+}, 10, 2);
 
 function cyril_gallery_meta_box($post) {
     wp_nonce_field('cyril_gallery_save', 'cyril_gallery_nonce');
