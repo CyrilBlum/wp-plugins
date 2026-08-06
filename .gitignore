@@ -1,0 +1,5 @@
+# Track only the reusable Blum Gallery plugin for now.
+*
+!cyril-gallery/
+!cyril-gallery/**
+!.gitignore
