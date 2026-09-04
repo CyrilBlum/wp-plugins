@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Blum Gallery
  * Description: A responsive, Gutenberg-friendly photography gallery with Media Library editing, filters, captions, and an accessible lightbox.
- * Version: 0.2.0
+ * Version: 0.3.0
  * Author: Cyril Blum
  * License: GPL-2.0-or-later
  * Text Domain: blum-gallery
@@ -93,88 +93,184 @@ add_action('add_meta_boxes', function ($post_type, $post) {
     add_meta_box('cyril_gallery_images', 'Blum Gallery Images', 'cyril_gallery_meta_box', 'page', 'normal', 'high');
 }, 10, 2);
 
+function blum_gallery_tag_options($taxonomy, $items = []) {
+    $options = [];
+    $seen = [];
+    foreach ((array) $taxonomy as $parent => $children) {
+        $parent = trim((string) $parent);
+        if ($parent && !isset($seen[$parent])) { $options[] = ['value' => $parent, 'label' => $parent, 'depth' => 0, 'parent' => '']; $seen[$parent] = true; }
+        foreach ((array) $children as $child) {
+            $child = trim((string) $child);
+            if ($child && !isset($seen[$child])) { $options[] = ['value' => $child, 'label' => $child, 'depth' => 1, 'parent' => $parent]; $seen[$child] = true; }
+        }
+    }
+    foreach ((array) $items as $item) foreach ((array) ($item['tags'] ?? []) as $tag) {
+        $tag = trim((string) $tag);
+        if ($tag && !isset($seen[$tag])) { $options[] = ['value' => $tag, 'label' => $tag, 'depth' => 0, 'parent' => '']; $seen[$tag] = true; }
+    }
+    return $options;
+}
+
+function blum_gallery_tag_select($selected_tags, $options, $class = 'image-tags') {
+    $selected_tags = array_map('strval', (array) $selected_tags);
+    $html = '<select class="blum-tag-picker-native ' . esc_attr($class) . '" multiple aria-label="Photo categories">';
+    foreach ($options as $option) {
+        $prefix = !empty($option['depth']) ? '— ' : '';
+        $html .= '<option value="' . esc_attr($option['value']) . '" data-depth="' . esc_attr($option['depth']) . '" data-parent="' . esc_attr($option['parent'] ?? '') . '" ' . selected(in_array($option['value'], $selected_tags, true), true, false) . '>' . esc_html($prefix . $option['label']) . '</option>';
+    }
+    return $html . '</select>';
+}
+
+function blum_gallery_bulk_tag_select($options) {
+    $html = '<select id="blum-gallery-bulk-tag" aria-label="Target category">';
+    foreach ($options as $option) $html .= '<option value="' . esc_attr($option['value']) . '">' . esc_html((!empty($option['depth']) ? '— ' : '') . $option['label']) . '</option>';
+    return $html . '</select>';
+}
+
 function cyril_gallery_meta_box($post) {
     wp_nonce_field('cyril_gallery_save', 'cyril_gallery_nonce');
     $items = cyril_gallery_items($post->ID);
     $settings = blum_gallery_settings($post->ID);
-    echo '<div class="blum-gallery-settings"><p><label><span class="dashicons dashicons-info-outline" title="Parent categories and their child tags. Photos tagged with a child appear under its parent."></span> Category hierarchy <textarea name="blum_gallery_taxonomy" class="widefat" rows="7">' . esc_textarea(wp_json_encode($settings['taxonomy'], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE)) . '</textarea></label><small>JSON format: {"Food":["Fine Dining","Casual"]}. Rename a parent or child here, then update matching image tags below.</small></p></div>';
-    echo '<p>Select images from the Media Library, then drag rows to reorder them. The title field defaults to the attachment’s WordPress <strong>Title</strong>; an entered value overrides it for this gallery only.</p><div class="blum-gallery-settings"><p><label><span class="dashicons dashicons-info-outline" title="Number of masonry columns on desktop. Mobile layouts adapt automatically."></span> Columns <select name="blum_gallery_columns"><option value="2" ' . selected($settings['columns'], 2, false) . '>2</option><option value="3" ' . selected($settings['columns'], 3, false) . '>3</option><option value="4" ' . selected($settings['columns'], 4, false) . '>4</option></select></label></p><p><label><input type="checkbox" name="blum_gallery_show_filters" value="1" ' . checked($settings['show_filters'] !== false, true, false) . '> <strong>Show category &amp; tag filters above gallery</strong></label></p><p><label>Default filter <select name="blum_gallery_default_filter"><option value="all" ' . selected($settings['default_filter'], 'all', false) . '>All</option><option value="Selected" ' . selected($settings['default_filter'], 'Selected', false) . '>Selected</option></select></label></p><p><label><input type="checkbox" name="blum_gallery_hide_page_title" value="1" ' . checked($settings['hide_page_title'], true, false) . '> Hide the WordPress page title</label></p><p><label><span class="dashicons dashicons-info-outline" title="Optional heading shown above the gallery. Clear it to show no title."></span> Title <input type="text" name="blum_gallery_title" value="' . esc_attr($settings['title']) . '" class="widefat"></label></p><p><label><span class="dashicons dashicons-info-outline" title="Optional small text shown above the title. Clear it to hide it."></span> Subtitle <input type="text" name="blum_gallery_subtitle" value="' . esc_attr($settings['subtitle']) . '" class="widefat"></label></p></div><div id="cyril-gallery-rows">';
-    foreach ($items as $index => $item) cyril_gallery_admin_row($index, $item);
-    echo '</div><p><button type="button" class="button" id="cyril-gallery-add">Add image</button></p><input type="hidden" id="cyril-gallery-json" name="cyril_gallery_json" value="' . esc_attr(wp_json_encode($items)) . '">';
+    $options = blum_gallery_tag_options($settings['taxonomy'], $items);
+    echo '<div class="blum-gallery-settings"><h3>Category hierarchy</h3><p class="description">Create parent categories and their indented subcategories here. Each photo can be assigned one or more categories below.</p><div id="blum-gallery-taxonomy-editor"></div><p><button type="button" class="button" id="blum-gallery-add-parent">Add parent category</button></p><input type="hidden" id="blum-gallery-taxonomy" name="blum_gallery_taxonomy" value="' . esc_attr(wp_json_encode($settings['taxonomy'])) . '"></div>';
+    echo '<p>Select images from the Media Library, drag rows to reorder them, and choose one or more categories for each photo.</p><div class="blum-gallery-settings"><p><label><span class="dashicons dashicons-info-outline" title="Number of masonry columns on desktop. Mobile layouts adapt automatically."></span> Columns <select name="blum_gallery_columns"><option value="2" ' . selected($settings['columns'], 2, false) . '>2</option><option value="3" ' . selected($settings['columns'], 3, false) . '>3</option><option value="4" ' . selected($settings['columns'], 4, false) . '>4</option></select></label></p><p><label><input type="checkbox" name="blum_gallery_show_filters" value="1" ' . checked($settings['show_filters'] !== false, true, false) . '> <strong>Show category &amp; tag filters above gallery</strong></label></p><p><label>Default filter <select name="blum_gallery_default_filter"><option value="all" ' . selected($settings['default_filter'], 'all', false) . '>All</option><option value="Selected" ' . selected($settings['default_filter'], 'Selected', false) . '>Selected</option></select></label></p><p><label><input type="checkbox" name="blum_gallery_hide_page_title" value="1" ' . checked($settings['hide_page_title'], true, false) . '> Hide the WordPress page title</label></p><p><label>Title <input type="text" name="blum_gallery_title" value="' . esc_attr($settings['title']) . '" class="widefat"></label></p><p><label>Subtitle <input type="text" name="blum_gallery_subtitle" value="' . esc_attr($settings['subtitle']) . '" class="widefat"></label></p></div>';
+    echo '<div class="blum-gallery-bulk"><strong>Bulk actions</strong><label><input type="checkbox" id="blum-gallery-select-all"> Select all</label><select id="blum-gallery-bulk-action"><option value="add">Add category</option><option value="replace">Set as only category</option><option value="remove">Remove from gallery</option></select>' . blum_gallery_bulk_tag_select($options) . '<button type="button" class="button" id="blum-gallery-apply-bulk">Apply to selected photos</button></div><div id="cyril-gallery-rows">';
+    foreach ($items as $index => $item) cyril_gallery_admin_row($index, $item, $options);
+    echo '</div><p><button type="button" class="button button-primary" id="cyril-gallery-add">Add image</button></p><input type="hidden" id="cyril-gallery-json" name="cyril_gallery_json" value="' . esc_attr(wp_json_encode($items)) . '">';
 }
 
-function cyril_gallery_admin_row($index, $item) {
+function cyril_gallery_admin_row($index, $item, $options = []) {
     $url = esc_url($item['url'] ?? '');
-    $tags = implode(', ', $item['tags'] ?? (!empty($item['category']) ? [$item['category']] : []));
+    $tags = $item['tags'] ?? (!empty($item['category']) ? [$item['category']] : []);
     if (empty($item['title']) && $url) { $attachment = attachment_url_to_postid($url); if ($attachment) $item['title'] = get_the_title($attachment); }
-    echo '<div class="cyril-gallery-row" draggable="true"><span class="dashicons dashicons-menu drag" title="Drag to reorder"></span><img src="' . $url . '"><div class="fields"><label><span class="dashicons dashicons-info-outline" title="Defaults to the Media Library attachment Title. Enter text here only to override it for this gallery."></span><input class="image-title" type="text" placeholder="Media Library Title (override optional)" value="' . esc_attr($item['title'] ?? '') . '"></label><label><span class="dashicons dashicons-info-outline" title="Comma-separated tags. A photo can have multiple tags; each tag becomes a filter button."></span><input class="image-tags" type="text" placeholder="Tags, comma separated" value="' . esc_attr($tags) . '"></label><input class="image-url" type="hidden" value="' . esc_attr($url) . '"></div><button type="button" class="button choose-image">Choose image</button><button type="button" class="button-link-delete remove-image">Remove</button></div>';
+    echo '<div class="cyril-gallery-row"><input class="image-select" type="checkbox" aria-label="Select photo for bulk action"><span class="dashicons dashicons-menu drag" title="Drag to reorder"></span><img src="' . $url . '"><div class="fields"><label>Title<input class="image-title" type="text" placeholder="Media Library Title (override optional)" value="' . esc_attr($item['title'] ?? '') . '"></label><label>Categories' . blum_gallery_tag_select($tags, $options) . '</label><input class="image-url" type="hidden" value="' . esc_attr($url) . '"></div><button type="button" class="button-link-delete remove-image">Remove</button></div>';
 }
+
+function blum_gallery_save_notice_key($post_id) {
+    return 'blum_gallery_save_notice_' . get_current_user_id() . '_' . absint($post_id);
+}
+
+function blum_gallery_set_save_notice($post_id, $type, $message) {
+    set_transient(blum_gallery_save_notice_key($post_id), ['type' => $type, 'message' => $message], MINUTE_IN_SECONDS * 5);
+}
+
+add_action('admin_notices', function () {
+    if (empty($_GET['post']) || !current_user_can('edit_page', absint($_GET['post']))) return;
+    $notice = get_transient(blum_gallery_save_notice_key(absint($_GET['post'])));
+    if (!$notice) return;
+    delete_transient(blum_gallery_save_notice_key(absint($_GET['post'])));
+    $class = $notice['type'] === 'error' ? 'notice notice-error' : 'notice notice-success is-dismissible';
+    echo '<div class="' . esc_attr($class) . '"><p><strong>Blum Gallery:</strong> ' . esc_html($notice['message']) . '</p></div>';
+});
 
 add_action('save_post_page', function ($post_id) {
     if (!isset($_POST['cyril_gallery_nonce']) || !wp_verify_nonce($_POST['cyril_gallery_nonce'], 'cyril_gallery_save') || (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) || !current_user_can('edit_page', $post_id)) return;
-    $items = json_decode(wp_unslash($_POST['cyril_gallery_json'] ?? '[]'), true);
-    if (!is_array($items)) return;
-    $clean = [];
-    foreach ($items as $item) if (!empty($item['url'])) $clean[] = ['url' => esc_url_raw($item['url']), 'title' => sanitize_text_field($item['title'] ?? ''), 'tags' => array_values(array_filter(array_map('sanitize_text_field', array_map('trim', explode(',', $item['tags'] ?? '')))))];
-    update_post_meta($post_id, '_cyril_gallery_items', $clean);
-    $taxonomy = json_decode(wp_unslash($_POST['blum_gallery_taxonomy'] ?? '{}'), true);
-    if (!is_array($taxonomy)) $taxonomy = [];
-    $clean_taxonomy = [];
-    foreach ($taxonomy as $parent => $children) {
-        $parent = sanitize_text_field($parent);
-        if (!$parent || !is_array($children)) continue;
-        $children = array_values(array_filter(array_map('sanitize_text_field', $children)));
-        if ($children) $clean_taxonomy[$parent] = $children;
+    register_shutdown_function(function () use ($post_id) {
+        $error = error_get_last();
+        $fatal_errors = [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR];
+        if ($error && in_array($error['type'], $fatal_errors, true)) blum_gallery_set_save_notice($post_id, 'error', 'A PHP error interrupted the gallery save: ' . $error['message']);
+    });
+    set_error_handler(function ($severity, $message, $file, $line) {
+        throw new ErrorException($message, 0, $severity, $file, $line);
+    });
+    try {
+        $items = json_decode(wp_unslash($_POST['cyril_gallery_json'] ?? '[]'), true);
+        if (!is_array($items)) throw new RuntimeException('Gallery data could not be read. No changes were saved.');
+        $clean = [];
+        foreach ($items as $item) {
+            if (!is_array($item) || empty($item['url'])) continue;
+            $raw_tags = $item['tags'] ?? [];
+            if (!is_array($raw_tags)) $raw_tags = explode(',', (string) $raw_tags);
+            $tags = array_values(array_unique(array_filter(array_map('sanitize_text_field', array_map('trim', $raw_tags)))));
+            $clean[] = ['url' => esc_url_raw($item['url']), 'title' => sanitize_text_field($item['title'] ?? ''), 'tags' => $tags];
+        }
+        $taxonomy = json_decode(wp_unslash($_POST['blum_gallery_taxonomy'] ?? '{}'), true);
+        if (!is_array($taxonomy)) throw new RuntimeException('Category hierarchy could not be read. No changes were saved.');
+        $clean_taxonomy = [];
+        foreach ($taxonomy as $parent => $children) {
+            $parent = sanitize_text_field($parent);
+            if (!$parent || !is_array($children)) continue;
+            $children = array_values(array_filter(array_map('sanitize_text_field', $children)));
+            $clean_taxonomy[$parent] = $children;
+        }
+        update_post_meta($post_id, '_cyril_gallery_items', $clean);
+        update_post_meta($post_id, '_blum_gallery_settings', [
+            'columns' => min(4, max(2, absint($_POST['blum_gallery_columns'] ?? 3))),
+            'title' => sanitize_text_field($_POST['blum_gallery_title'] ?? ''),
+            'subtitle' => sanitize_text_field($_POST['blum_gallery_subtitle'] ?? ''),
+            'default_filter' => in_array($_POST['blum_gallery_default_filter'] ?? 'all', ['all', 'Selected'], true) ? $_POST['blum_gallery_default_filter'] : 'all',
+            'show_filters' => !empty($_POST['blum_gallery_show_filters']),
+            'hide_page_title' => !empty($_POST['blum_gallery_hide_page_title']),
+            'taxonomy' => $clean_taxonomy
+        ]);
+        blum_gallery_set_save_notice($post_id, 'success', sprintf('Saved successfully: %d photo%s updated.', count($clean), count($clean) === 1 ? '' : 's'));
+    } catch (Throwable $error) {
+        blum_gallery_set_save_notice($post_id, 'error', 'Save failed: ' . $error->getMessage());
+    } finally {
+        restore_error_handler();
     }
-    update_post_meta($post_id, '_blum_gallery_settings', [
-        'columns' => min(4, max(2, absint($_POST['blum_gallery_columns'] ?? 3))),
-        'title' => sanitize_text_field($_POST['blum_gallery_title'] ?? ''),
-        'subtitle' => sanitize_text_field($_POST['blum_gallery_subtitle'] ?? ''),
-        'default_filter' => in_array($_POST['blum_gallery_default_filter'] ?? 'all', ['all', 'Selected'], true) ? $_POST['blum_gallery_default_filter'] : 'all',
-        'show_filters' => !empty($_POST['blum_gallery_show_filters']),
-        'hide_page_title' => !empty($_POST['blum_gallery_hide_page_title']),
-        'taxonomy' => $clean_taxonomy
-    ]);
 });
 
 add_action('admin_enqueue_scripts', function ($hook) {
     if (!in_array($hook, ['post.php', 'post-new.php'], true)) return;
     wp_enqueue_media();
-    wp_add_inline_style('dashicons', '.cyril-gallery-row{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid #ddd}.cyril-gallery-row img{width:72px;height:54px;object-fit:cover}.cyril-gallery-row .fields{display:flex;gap:6px;flex-wrap:wrap}.cyril-gallery-row input{max-width:500px}.cyril-gallery-row label{display:flex;align-items:center;gap:5px}.cyril-gallery-row .drag{cursor:grab;color:#777}.blum-gallery-settings{background:#f6f7f7;padding:10px 14px;max-width:700px;margin-bottom:12px}.blum-gallery-settings label{display:block;margin-bottom:8px}.blum-gallery-settings input[type="text"],.blum-gallery-settings select{margin-top:4px}');
+    wp_add_inline_style('dashicons', '.cyril-gallery-row{display:flex;align-items:flex-start;gap:10px;padding:12px 0;border-bottom:1px solid #ddd}.cyril-gallery-row img{width:96px;height:72px;object-fit:cover}.cyril-gallery-row .fields{display:grid;grid-template-columns:minmax(220px,1fr) minmax(210px,1fr);gap:10px;flex:1}.cyril-gallery-row input[type="text"],.cyril-gallery-row select{width:100%;max-width:500px}.cyril-gallery-row label{display:block;font-weight:600}.cyril-gallery-row label input,.cyril-gallery-row label select{display:block;margin-top:4px;font-weight:400}.cyril-gallery-row .drag{cursor:grab;color:#777;margin-top:28px}.cyril-gallery-row .image-select{margin-top:30px}.blum-tag-picker-native{display:none!important}.blum-tag-picker{position:relative;margin-top:4px;font-weight:400}.blum-tag-picker-toggle{width:100%;max-width:500px;min-height:34px;padding:5px 9px;text-align:left;background:#fff;border:1px solid #8c8f94;border-radius:3px;cursor:pointer}.blum-tag-picker-toggle:after{content:"⌄";float:right}.blum-tag-picker-menu{position:absolute;z-index:20;top:calc(100% + 3px);left:0;width:100%;max-width:500px;max-height:280px;padding:8px;background:#fff;border:1px solid #8c8f94;box-shadow:0 4px 12px rgba(0,0,0,.15);overflow:auto}.blum-tag-picker-search{width:100%;margin:0 0 6px}.blum-tag-picker-option{display:flex!important;align-items:center;gap:7px;padding:5px 2px;white-space:nowrap}.blum-tag-picker-option input{display:inline-block!important;width:auto!important;margin:0!important}.blum-tag-picker-option.depth-1{padding-left:20px}.blum-tag-picker-parent{margin-left:auto;color:#646970;font-size:11px;font-weight:400}.blum-tag-picker-option[hidden]{display:none}.blum-gallery-settings{background:#f6f7f7;padding:12px 16px;max-width:900px;margin-bottom:12px}.blum-gallery-settings label{display:block;margin-bottom:8px}.blum-gallery-settings input[type="text"],.blum-gallery-settings select{margin-top:4px}.blum-taxonomy-group{border:1px solid #dcdcde;background:#fff;padding:10px;margin:8px 0}.blum-taxonomy-group-head{display:flex;gap:8px;align-items:center}.blum-taxonomy-group-head input{flex:1}.blum-taxonomy-children{margin:10px 0 0 24px}.blum-taxonomy-child{display:flex;gap:8px;margin:6px 0}.blum-taxonomy-child input{flex:1}.blum-gallery-bulk{position:sticky;top:32px;z-index:3;display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 14px;margin:16px 0;background:#fff;border:1px solid #c3c4c7}.blum-gallery-bulk select{max-width:220px}@media(max-width:700px){.cyril-gallery-row .fields{grid-template-columns:1fr}.cyril-gallery-row img{width:72px;height:54px}.cyril-gallery-row .drag,.cyril-gallery-row .image-select{margin-top:12px}}');
     wp_enqueue_script('jquery-ui-sortable');
     wp_add_inline_script('media-editor', <<<'JS'
 (function($){
-    var frame;
+    var frame, $rows=$('#cyril-gallery-rows'), $taxonomy=$('#blum-gallery-taxonomy'), hierarchy={};
+    try { hierarchy=JSON.parse($taxonomy.val()||'{}'); } catch(e) { hierarchy={}; }
+    function childRow(value){var $row=$('<div class="blum-taxonomy-child"><input type="text" class="blum-taxonomy-child-input" placeholder="Subcategory"><button type="button" class="button-link-delete blum-remove-child">Remove</button></div>');$row.find('input').val(value||'');return $row;}
+    function parentGroup(parent,children){var $group=$('<div class="blum-taxonomy-group"><div class="blum-taxonomy-group-head"><input type="text" class="blum-taxonomy-parent" placeholder="Parent category"><button type="button" class="button blum-add-child">Add subcategory</button><button type="button" class="button-link-delete blum-remove-parent">Remove</button></div><div class="blum-taxonomy-children"></div></div>');$group.find('.blum-taxonomy-parent').val(parent||'');(children||[]).forEach(function(child){$group.find('.blum-taxonomy-children').append(childRow(child));});return $group;}
+    function cleanHierarchy(){var result={};$('#blum-gallery-taxonomy-editor .blum-taxonomy-group').each(function(){var parent=$(this).find('.blum-taxonomy-parent').val().trim();if(!parent)return;var children=[];$(this).find('.blum-taxonomy-child-input').each(function(){var value=$(this).val().trim();if(value&&children.indexOf(value)<0)children.push(value);});result[parent]=children;});hierarchy=result;$taxonomy.val(JSON.stringify(result));}
+    function optionsFor(selected){var seen={},options=[];Object.keys(hierarchy).forEach(function(parent){if(parent&&!seen[parent]){options.push({value:parent,label:parent,depth:0,parent:''});seen[parent]=true;}(hierarchy[parent]||[]).forEach(function(child){if(child&&!seen[child]){options.push({value:child,label:child,depth:1,parent:parent});seen[child]=true;}});});(selected||[]).forEach(function(tag){if(tag&&!seen[tag]){options.push({value:tag,label:tag,depth:0,parent:''});seen[tag]=true;}});return options;}
+    function tagSelect(selected,className){selected=selected||[];var $select=$('<select multiple class="blum-tag-picker-native '+(className||'image-tags')+'" aria-label="Photo categories"></select>');optionsFor(selected).forEach(function(option){$('<option>').val(option.value).text((option.depth?'— ':'')+option.label).attr({'data-depth':option.depth,'data-parent':option.parent||''}).prop('selected',selected.indexOf(option.value)>-1).appendTo($select);});return $select;}
+    function enhanceTagSelect($select){if(!$select.length)return;$select.next('.blum-tag-picker').remove();var $picker=$('<div class="blum-tag-picker"><button type="button" class="blum-tag-picker-toggle"></button><div class="blum-tag-picker-menu" hidden><input type="search" class="blum-tag-picker-search" placeholder="Search categories"><div class="blum-tag-picker-options"></div></div></div>'),$toggle=$picker.find('.blum-tag-picker-toggle'),$menu=$picker.find('.blum-tag-picker-menu'),$options=$picker.find('.blum-tag-picker-options');function label(){var values=$select.val()||[];$toggle.text(values.length?values.join(', '):'Choose categories');}function render(){var chosen=$select.val()||[];$options.empty();$select.find('option').each(function(){var option=this,parent=$(option).data('parent')||'',$label=$('<label class="blum-tag-picker-option"><input type="checkbox"><span class="blum-tag-picker-name"></span><small class="blum-tag-picker-parent"></small></label>');$label.toggleClass('depth-1',String($(option).data('depth'))==='1');$label.find('input').prop('checked',chosen.indexOf(option.value)>-1).on('change',function(){option.selected=this.checked;$select.trigger('change');label();});$label.find('.blum-tag-picker-name').text($(option).text().replace(/^—\s*/,''));$label.find('.blum-tag-picker-parent').text(parent);$label.appendTo($options);});label();}render();$toggle.on('click',function(){$('.blum-tag-picker-menu').not($menu).prop('hidden',true);$menu.prop('hidden',!$menu.prop('hidden'));if(!$menu.prop('hidden'))$menu.find('input').trigger('focus');});$menu.on('input','.blum-tag-picker-search',function(){var needle=$(this).val().toLowerCase();$options.children().each(function(){$(this).prop('hidden',$(this).text().toLowerCase().indexOf(needle)<0);});});$select.after($picker);}
+    function refreshTagControls(){$rows.find('.image-tags').each(function(){var selected=$(this).val()||[];var $replacement=tagSelect(selected,'image-tags');$(this).replaceWith($replacement);enhanceTagSelect($replacement);});var $bulk=$('#blum-gallery-bulk-tag'),selectedBulk=$bulk.val();if($bulk.length){var $replacement=$('<select id="blum-gallery-bulk-tag" aria-label="Target category"></select>');optionsFor([]).forEach(function(option){$('<option>').val(option.value).text((option.depth?'— ':'')+option.label).prop('selected',option.value===selectedBulk).appendTo($replacement);});$bulk.replaceWith($replacement);}}
     function sync(){
+        cleanHierarchy();
         var items=[];
-        $('#cyril-gallery-rows .cyril-gallery-row').each(function(){
+        $rows.find('.cyril-gallery-row').each(function(){
             var url=$(this).find('.image-url').val();
             if(url) items.push({
                 url: url,
                 title: $(this).find('.image-title').val(),
-                tags: $(this).find('.image-tags').val().split(',').map(function(s){return s.trim();}).filter(Boolean)
+                tags: $(this).find('.image-tags').val()||[]
             });
         });
         $('#cyril-gallery-json').val(JSON.stringify(items));
     }
-    $('#cyril-gallery-rows').sortable({handle:'.drag',update:sync});
-    $('#cyril-gallery-rows').on('input change','input',sync);
-    $('#cyril-gallery-rows').on('click','.remove-image',function(){$(this).closest('.cyril-gallery-row').remove();sync();});
+    Object.keys(hierarchy).forEach(function(parent){$('#blum-gallery-taxonomy-editor').append(parentGroup(parent,hierarchy[parent]));});
+    $rows.find('.image-tags').each(function(){enhanceTagSelect($(this));});
+    $(document).on('click',function(event){if(!$(event.target).closest('.blum-tag-picker').length)$('.blum-tag-picker-menu').prop('hidden',true);});
+    $rows.sortable({handle:'.drag',update:sync});
+    $(document).on('submit','#post',sync);
+    $rows.on('input change','.image-title,.image-tags',sync);
+    $rows.on('click','.remove-image',function(){$(this).closest('.cyril-gallery-row').remove();sync();});
+    $('#blum-gallery-taxonomy-editor').on('input','.blum-taxonomy-parent,.blum-taxonomy-child-input',function(){cleanHierarchy();refreshTagControls();sync();});
+    $('#blum-gallery-taxonomy-editor').on('click','.blum-add-child',function(){$(this).closest('.blum-taxonomy-group').find('.blum-taxonomy-children').append(childRow(''));cleanHierarchy();});
+    $('#blum-gallery-taxonomy-editor').on('click','.blum-remove-child',function(){$(this).closest('.blum-taxonomy-child').remove();cleanHierarchy();refreshTagControls();sync();});
+    $('#blum-gallery-taxonomy-editor').on('click','.blum-remove-parent',function(){$(this).closest('.blum-taxonomy-group').remove();cleanHierarchy();refreshTagControls();sync();});
+    $('#blum-gallery-add-parent').on('click',function(){$('#blum-gallery-taxonomy-editor').append(parentGroup('',[]));});
+    $('#blum-gallery-select-all').on('change',function(){$rows.find('.image-select').prop('checked',this.checked);});
+    $('#blum-gallery-bulk-action').on('change',function(){$('#blum-gallery-bulk-tag').prop('disabled',$(this).val()==='remove');});
+    $('#blum-gallery-apply-bulk').on('click',function(){var $selected=$rows.find('.image-select:checked'),action=$('#blum-gallery-bulk-action').val(),tag=$('#blum-gallery-bulk-tag').val();if(!$selected.length){window.alert('Select one or more photos first.');return;}if(action==='remove'){$selected.closest('.cyril-gallery-row').remove();}else if(!tag){window.alert('Choose a target category first.');return;}else{$selected.each(function(){var $select=$(this).closest('.cyril-gallery-row').find('.image-tags'),tags=$select.val()||[];if(action==='replace')tags=[tag];else if(tags.indexOf(tag)<0)tags.push(tag);var $replacement=tagSelect(tags,'image-tags');$select.replaceWith($replacement);enhanceTagSelect($replacement);});}$('#blum-gallery-select-all').prop('checked',false);sync();});
     $('#cyril-gallery-add').on('click',function(e){
         e.preventDefault();
-        if(frame){frame.open();return;}
         frame=wp.media({title:'Select gallery images',button:{text:'Add to gallery'},multiple:true});
         frame.on('select',function(){
             var state=frame.state(), selection=state.get('selection');
             selection.each(function(att){
                 var a=att.toJSON();
-                var row=$('<div class="cyril-gallery-row" draggable="true"><span class="dashicons dashicons-menu drag"></span><img src="'+(a.sizes&&a.sizes.thumbnail?a.sizes.thumbnail.url:a.url)+'"><div class="fields"><label><span>Title:</span><input class="image-title" type="text" value="'+(a.title||'')+'"></label><label><span>Tags:</span><input class="image-tags" type="text" value="Selected"></label><input class="image-url" type="hidden" value="'+a.url+'"></div><button type="button" class="button-link-delete remove-image">Remove</button></div>');
-                $('#cyril-gallery-rows').append(row);
+                var row=$('<div class="cyril-gallery-row"><input class="image-select" type="checkbox" aria-label="Select photo for bulk action"><span class="dashicons dashicons-menu drag"></span><img><div class="fields"><label>Title<input class="image-title" type="text" placeholder="Media Library Title (override optional)"></label><label>Categories</label><input class="image-url" type="hidden"></div><button type="button" class="button-link-delete remove-image">Remove</button></div>');
+                row.find('img').attr('src',a.sizes&&a.sizes.thumbnail?a.sizes.thumbnail.url:a.url);row.find('.image-title').val(a.title||'');row.find('.image-url').val(a.url);row.find('.fields label').eq(1).append(tagSelect(['Selected'],'image-tags'));enhanceTagSelect(row.find('.image-tags'));
+                $rows.append(row);
             });
             sync();
         });
         frame.open();
     });
+    sync();
 })(jQuery);
 JS
     );
